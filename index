@@ -1,0 +1,662 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Fire Sphere — Simulation</title>
+<style>
+  /* ----------------------- БАЗОВІ СТИЛІ ----------------------- */
+  :root{
+    --bg:#071428;
+    --panel:rgba(255,255,255,0.04);
+    --accent:#ffd166;
+    --font-sans: Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+  }
+  html,body{height:100%;margin:0;background:linear-gradient(180deg,#071428 0%, #0b1420 80%);font-family:var(--font-sans);color:#e8f1ff}
+  .wrap{height:100vh;display:flex;align-items:center;justify-content:center;padding:16px;box-sizing:border-box}
+  /* main app "device" container: responsive, defaults to portrait */
+  .device{
+    width:420px; max-width:96vw; height:760px; max-height:96vh;
+    background:linear-gradient(180deg,#0b1b2b,#071428 60%); border-radius:16px; overflow:hidden;
+    position:relative; box-shadow:0 18px 60px rgba(2,6,23,.7);
+  }
+
+  /* camera container is what we will translate/scale to "zoom out" */
+  .camera{
+    width:100%; height:100%; position:absolute; left:0; top:0; transform-origin:0 0;
+    pointer-events:none;
+  }
+
+  /* background layers - will change images via JS */
+  .bg-layer{
+    position:absolute; left:0; top:0; right:0; bottom:0; background-size:cover; background-position:center;
+    pointer-events:none; opacity:1; transition:opacity .6s ease;
+  }
+  .bg-layer.hidden{opacity:0}
+
+  /* UI top */
+  .ui-top{position:absolute;left:12px;right:12px;top:12px;display:flex;justify-content:space-between;gap:8px;z-index:60;pointer-events:auto}
+  .panel{background:var(--panel);backdrop-filter: blur(4px);padding:8px;border-radius:10px;color:#eaf6ff;font-size:13px}
+  .small-btn{background:transparent;border:0;color:inherit;padding:6px;border-radius:6px;cursor:pointer}
+  .small-btn:hover{background:rgba(255,255,255,0.02)}
+
+  /* stats */
+  .stats{display:flex;gap:8px;align-items:center}
+
+  /* scene (SVG) */
+  .scene-wrap{position:absolute;left:0;right:0;top:0;bottom:0;display:flex;align-items:flex-end;justify-content:center;z-index:10}
+  svg{width:100%;height:100%;display:block}
+
+  /* fire overlay (interactive) */
+  .fire-overlay{position:absolute;left:50%;transform:translateX(-50%);bottom:96px;width:260px;height:72px;display:flex;align-items:center;justify-content:center;pointer-events:auto;z-index:40}
+  .fire-base{width:240px;height:64px;border-radius:12px;background:linear-gradient(180deg,#ff6b3d,#ff3b1f);box-shadow:0 12px 30px rgba(255,80,40,0.12);position:relative;display:flex;align-items:center;justify-content:center}
+  .fire-menu{position:absolute;right:8px;top:8px;width:32px;height:32px;border-radius:8px;border:0;background:rgba(0,0,0,0.18);color:#fff;cursor:pointer}
+  .badges{position:absolute;left:10px;top:8px;display:flex;gap:6px;pointer-events:none}
+  .badge{min-width:22px;height:22px;padding:2px 6px;border-radius:6px;background:rgba(255,255,255,0.06);font-size:12px;display:flex;align-items:center;justify-content:center}
+
+  /* particles layer (smoke) */
+  .particles{position:absolute;left:50%;transform:translateX(-50%);bottom:170px;width:260px;height:420px;pointer-events:none;overflow:visible;z-index:35}
+
+  /* modal (fire contents) */
+  .modal{position:absolute;left:50%;transform:translateX(-50%);bottom:170px;width:320px;max-height:320px;overflow:auto;padding:10px;border-radius:10px;background:rgba(2,6,23,0.9);box-shadow:0 20px 60px rgba(0,0,0,0.6);display:none;z-index:90;pointer-events:auto}
+  .modal.show{display:block}
+  .modal .row{display:flex;justify-content:space-between;align-items:center;padding:8px;border-bottom:1px dashed rgba(255,255,255,0.03);font-size:13px}
+
+  /* inventory bottom */
+  .inventory-panel{position:absolute;left:12px;right:12px;bottom:12px;z-index:60;pointer-events:auto;display:flex;gap:8px}
+  .inventory{flex:1;max-height:220px;padding:8px;border-radius:10px;background:var(--panel);overflow:auto}
+  .item{display:flex;align-items:center;justify-content:space-between;padding:6px;border-radius:8px;margin-bottom:6px}
+  .item .meta{display:flex;gap:10px;align-items:center}
+  .item .meta .icon{width:36px;height:36;border-radius:8px;background:rgba(255,255,255,0.03);display:flex;align-items:center;justify-content:center;font-weight:700}
+  .item .controls{display:flex;gap:6px}
+
+  /* popup for landmark (side) */
+  .landmark-popup{position:absolute;right:12px;top:110px;width:300px;padding:12px;border-radius:10px;background:linear-gradient(90deg,#fff,#f7f7f9);box-shadow:0 10px 30px rgba(0,0,0,0.18);font-weight:700;z-index:120;display:none}
+  .landmark-popup.show{display:block}
+  .landmark-popup img{width:100%;height:120px;object-fit:cover;border-radius:8px;margin-bottom:8px}
+
+  /* helper small text */
+  .muted{opacity:0.75;font-size:12px}
+
+  /* responsive tweaks */
+  @media (max-width:460px){
+    .device{width:92vw;height:92vh}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="device" id="deviceRoot">
+    <!-- camera: we will transform (translate+scale) this to keep sphere in frame -->
+    <div class="camera" id="camera">
+      <!-- backgrounds (3 levels) -->
+      <div class="bg-layer" id="bg1" style="background-image: url('');"></div>
+      <div class="bg-layer hidden" id="bg2" style="background-image: url('');"></div>
+      <div class="bg-layer hidden" id="bg3" style="background-image: url('');"></div>
+
+      <!-- Scene (SVG) -->
+      <div class="scene-wrap">
+        <svg id="scene" viewBox="0 0 420 760" preserveAspectRatio="xMidYMid meet">
+          <defs>
+            <filter id="glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="6" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+            <linearGradient id="sphereGrad" x1="0.5" x2="0.5" y1="0" y2="1">
+              <stop id="gradTop" offset="0%" stop-color="#000000" stop-opacity="0.12"/>
+              <stop id="gradBottom" offset="100%" stop-color="#000000" stop-opacity="0.03"/>
+            </linearGradient>
+          </defs>
+
+          <!-- simple ground -->
+          <rect x="0" y="700" width="420" height="60" fill="rgba(255,255,255,0.02)"/>
+
+          <!-- Fire base rect (for alignment reference) -->
+          <g id="fireGroup">
+            <rect id="fireRect" x="90" y="668" width="240" height="60" rx="12" fill="#d9480f" opacity="1"/>
+          </g>
+
+          <!-- Sphere (ellipse) -->
+          <g id="sphereGroup">
+            <ellipse id="sphereEl" cx="210" cy="620" rx="75" ry="75" fill="url(#sphereGrad)" stroke="rgba(255,255,255,0.06)" stroke-width="3" filter="url(#glow)"/>
+          </g>
+        </svg>
+      </div>
+
+      <!-- overlays -->
+      <div class="fire-overlay" id="fireOverlay">
+        <div class="fire-base">
+          <div class="badges" id="badges"></div>
+          <button class="fire-menu" id="fireMenuBtn" title="Склад вогнища">⋯</button>
+        </div>
+      </div>
+
+      <div class="particles" id="particles"></div>
+
+      <!-- modal with current composition -->
+      <div class="modal" id="fireModal">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+          <strong>Склад вогнища</strong>
+          <button class="small-btn" id="closeModal">Close</button>
+        </div>
+        <div id="modalContent"></div>
+      </div>
+
+    </div>
+
+    <!-- top UI -->
+    <div class="ui-top">
+      <div class="panel stats">
+        <div>Висота: <span id="heightLabel">--</span></div>
+        <div style="margin-left:8px">Об'єм: <span id="volumeLabel">--</span></div>
+        <div style="margin-left:8px">Маса: <span id="massLabel">0</span> kg</div>
+      </div>
+      <div class="panel" style="display:flex;gap:6px;align-items:center">
+        <button class="small-btn" id="resetBtn" title="Reset">Reset</button>
+        <div class="muted" style="margin-left:6px;font-size:12px">+1, +10, +100 — швидке додавання</div>
+      </div>
+    </div>
+
+    <!-- landmark popup (right side) -->
+    <div class="landmark-popup" id="landmarkPopup" role="status" aria-live="polite">
+      <img id="landmarkImg" src="" alt="" />
+      <div id="landmarkText"></div>
+    </div>
+
+    <!-- inventory bottom -->
+    <div class="inventory-panel">
+      <div class="inventory panel" id="inventoryList"></div>
+      <div style="width:120px" class="panel" id="sidePanel">
+        <div style="display:flex;flex-direction:column;gap:6px">
+          <div class="muted">Натискай, щоб додати kg</div>
+          <button class="small-btn" id="toggleInventory">Прих/Показ</button>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+/* ===================================================================
+   Конфігурація + дані (ті, що ти дав)
+   =================================================================== */
+
+const CONFIG = {
+  PX_PER_M: 100,     // пікселів на 1 метр (регулюй, щоб масштаб відповідав екранам)
+  INITIAL_RADIUS_M: 0.75, // стартовий радіус кулі в метрах (1.5 m діаметр => r=0.75)
+  POPUP_DURATION_MS: 2000, // 2 секунди
+  BG_THRESHOLDS_M: { bg2:5000, bg3:30000 }, // 5km, 30km
+  MAX_DARK_SCALE_M3: 1000, // масштаб для затемнення градієнта (регулюй)
+  ANIM_DURATION_MS: 15000 // 15 секунд анімація росту
+};
+
+// substances: взято з твоєї таблиці, co2PerKg = м³ CO2/кг, gasPerKg = оцінка загального об'єму газів/кг
+const SUBSTANCES = [
+  {id:'wood', name:"Деревина (Дуб/Сосна, суха)", formula:"C_xH_y", co2PerKg:0.95, gasPerKg:1.85, toxic:"CO, сажа, ЛОС"},
+  {id:'oil', name:"Нафта (Сира)", formula:"C_nH_m", co2PerKg:1.7, gasPerKg:2.75, toxic:"CO, SO₂, NOx"},
+  {id:'methane', name:"Природний Газ (Метан)", formula:"CH₄", co2PerKg:2.75, gasPerKg:3.75, toxic:"NOx, CO"},
+  {id:'gasoline', name:"Бензин (Автомобільний)", formula:"C₈H₁₈", co2PerKg:2.3, gasPerKg:3.25, toxic:"CO, NOx"},
+  {id:'plastic', name:"Пластмаса (PE)", formula:"(C₂H₄)_n", co2PerKg:2.2, gasPerKg:3.15, toxic:"Діоксини, HCl, CO"},
+  {id:'foam', name:"Пінопласт (PS)", formula:"(C₈H₈)_n", co2PerKg:2.2, gasPerKg:3.5, toxic:"Сажа, стирол, CO"},
+  {id:'battery', name:"Акумулятор (Li-ion)", formula:"Li_xC₆", co2PerKg:0.2, gasPerKg:10.0, toxic:"Фториди, органічні розчинники"},
+  {id:'coal', name:"Вугілля (Кам'яне)", formula:"C", co2PerKg:1.55, gasPerKg:2.4, toxic:"CO, SO₂, NOx, сажа"},
+  {id:'mazut', name:"Мазут", formula:"C_nH_mS", co2PerKg:1.7, gasPerKg:2.75, toxic:"SO₂, SO₃, сажа"},
+  {id:'peat', name:"Торф", formula:"C_xH_yO_z", co2PerKg:1.05, gasPerKg:1.75, toxic:"H₂O, CO, сажа"},
+  {id:'rubber', name:"Гума (Шина)", formula:"(C₅H₈)_n", co2PerKg:1.9, gasPerKg:3.0, toxic:"Сажа, SO₂"},
+  {id:'pp', name:"Поліпропілен (PP)", formula:"(C₃H₆)_n", co2PerKg:2.2, gasPerKg:3.15, toxic:"CO, сажа"}
+];
+
+// landmarks (height in meters) — в порядку зростання
+const LANDMARKS = [
+  {id:'bus', name:'Лондонський двоповерховий автобус', h:4, note:'Дорожній рівень', img:''},
+  {id:'lamp', name:'Ліхтарний стовп', h:6, img:''},
+  {id:'greatwall', name:'Велика китайська стіна (середня)', h:6.6, img:''},
+  {id:'building5', name:"П'ятиповерховий будинок", h:15, img:''},
+  {id:'niagara', name:'Ніагарський водоспад', h:53, img:''},
+  {id:'bigben', name:'Біг-Бен (Вежа Єлизавети)', h:96, img:''},
+  {id:'rodina', name:'Батьківщина-Мати (Київ)', h:102, img:''},
+  {id:'cheops', name:'Піраміда Хеопса', h:137.8, img:''},
+  {id:'eiffel', name:'Ейфелева вежа', h:330, img:''},
+  {id:'empire', name:'Емпайр-Стейт-Білдінг', h:443, img:''},
+  {id:'willis', name:'Willis Tower', h:527, img:''},
+  {id:'shanghai', name:'Шанхайський WFC', h:492, img:''},
+  {id:'cntower', name:'CN Tower', h:553, img:''},
+  {id:'skytower', name:'Sky Tower (Auckland)', h:328, img:''},
+  {id:'burj', name:'Бурдж-Халіфа', h:828, img:''},
+  {id:'cloud_low', name:'Хмари (нижній ярус)', h:1000, img:''},
+  {id:'cloud_mid', name:'Хмари (середній ярус)', h:2000, img:''},
+  {id:'hoverla', name:'Гора Говерла', h:2061, img:''},
+  {id:'montblanc', name:'Монблан', h:4808, img:''},
+  {id:'kilim', name:'Кіліманджаро', h:5895, img:''},
+  {id:'aconc', name:'Аконкагуа', h:6961, img:''},
+  {id:'cloud_top', name:'Хмари (верхній ярус)', h:13000, img:''},
+  {id:'aircraft_cruise', name:'Крейсерська висота літака', h:10000, img:''},
+  {id:'everest', name:'Еверест', h:8849, img:''}
+];
+
+/* ===================================================================
+   Стан програми
+   =================================================================== */
+let composition = {}; // {id: kg}
+let totalMassKg = 0;
+let totalCO2_m3 = 0;
+let currentVolume_m3 = 0; // initial + CO2
+const initialVolume_m3 = (4/3)*Math.PI*Math.pow(CONFIG.INITIAL_RADIUS_M,3); // ~1.77 m3
+let currentRadius_m = CONFIG.INITIAL_RADIUS_M; // метри
+let animRAF = null;
+let animStart = 0, animFromR = currentRadius_m, animToR = currentRadius_m;
+let popupQueue = [];
+let popupActive = false;
+
+/* ===================================================================
+   DOM refs
+   =================================================================== */
+const device = document.getElementById('deviceRoot');
+const camera = document.getElementById('camera');
+const sphereEl = document.getElementById('sphereEl');
+const gradTop = document.getElementById('gradTop');
+const gradBottom = document.getElementById('gradBottom');
+const fireRect = document.getElementById('fireRect');
+const particles = document.getElementById('particles');
+const badges = document.getElementById('badges');
+const inventoryList = document.getElementById('inventoryList');
+const massLabel = document.getElementById('massLabel');
+const volumeLabel = document.getElementById('volumeLabel');
+const heightLabel = document.getElementById('heightLabel');
+const fireMenuBtn = document.getElementById('fireMenuBtn');
+const fireModal = document.getElementById('fireModal');
+const modalContent = document.getElementById('modalContent');
+const closeModal = document.getElementById('closeModal');
+const landmarkPopup = document.getElementById('landmarkPopup');
+const landmarkImg = document.getElementById('landmarkImg');
+const landmarkText = document.getElementById('landmarkText');
+const bg1 = document.getElementById('bg1');
+const bg2 = document.getElementById('bg2');
+const bg3 = document.getElementById('bg3');
+const resetBtn = document.getElementById('resetBtn');
+const toggleInventory = document.getElementById('toggleInventory');
+
+/* ===================================================================
+   Ініціалізація UI
+   =================================================================== */
+function initInventory(){
+  inventoryList.innerHTML = '';
+  SUBSTANCES.forEach(s=>{
+    const el = document.createElement('div'); el.className='item';
+    el.innerHTML = `
+      <div class="meta">
+        <div class="icon">${s.name.charAt(0)}</div>
+        <div>
+          <div style="font-weight:700">${s.name}</div>
+          <div style="font-size:12px;opacity:0.8">${s.formula} • CO₂ ${s.co2PerKg} m³/kg</div>
+        </div>
+      </div>
+      <div class="controls">
+        <button class="small-btn" data-id="${s.id}" data-action="add100">+100</button>
+        <button class="small-btn" data-id="${s.id}" data-action="add10">+10</button>
+        <button class="small-btn" data-id="${s.id}" data-action="add1">+1</button>
+      </div>
+    `;
+    inventoryList.appendChild(el);
+  });
+}
+initInventory();
+
+/* Inventory button handlers */
+inventoryList.addEventListener('click', (ev)=>{
+  const btn = ev.target.closest('button'); if(!btn) return;
+  const id = btn.dataset.id; const action = btn.dataset.action;
+  if(!id || !action) return;
+  if(action==='add1') modifyQuantity(id, 1);
+  if(action==='add10') modifyQuantity(id, 10);
+  if(action==='add100') modifyQuantity(id, 100);
+});
+
+/* fire menu */
+fireMenuBtn.addEventListener('click', ()=>{
+  fireModal.classList.toggle('show');
+  renderModal();
+});
+closeModal.addEventListener('click', ()=> fireModal.classList.remove('show'));
+
+/* reset */
+resetBtn.addEventListener('click', resetAll);
+toggleInventory.addEventListener('click', ()=> {
+  inventoryList.style.display = (inventoryList.style.display==='none') ? 'block' : 'none';
+});
+
+/* ===================================================================
+   Основні функції: модифікація кількостей, перерахунок об'ємів, анімація
+   =================================================================== */
+
+function modifyQuantity(id, deltaKg){
+  const prev = composition[id] || 0;
+  let next = prev + deltaKg;
+  if(next < 0) next = 0;
+  if(next === 0) delete composition[id]; else composition[id] = next;
+  updateBadges();
+  recomputeTotalsAndAnimate();
+  renderModal(); // оновити модальне вікно при відкритті
+}
+
+function updateBadges(){
+  badges.innerHTML = '';
+  for(const id in composition){
+    const s = SUBSTANCES.find(x=>x.id===id);
+    const qty = composition[id];
+    const b = document.createElement('div'); b.className='badge'; b.title = `${s.name} — ${qty} kg`;
+    b.textContent = s.name.charAt(0) + (qty>1 ? qty : '');
+    badges.appendChild(b);
+  }
+}
+
+function recomputeTotalsAndAnimate(){
+  totalMassKg = Object.keys(composition).reduce((sum,id)=> sum + (composition[id]||0), 0);
+  // compute CO2 volume total (m3)
+  totalCO2_m3 = Object.keys(composition).reduce((sum,id)=>{
+    const s = SUBSTANCES.find(x=>x.id===id);
+    return sum + (composition[id]||0) * (s ? s.co2PerKg : 0);
+  }, 0);
+  // total volume is initial sphere + CO2 volume (alternative: use gasPerKg if chosen)
+  currentVolume_m3 = initialVolume_m3 + totalCO2_m3;
+  // compute target radius (m): r = (3V / 4π)^(1/3)
+  const targetR_m = Math.cbrt((3 * currentVolume_m3) / (4 * Math.PI));
+  massLabel.textContent = totalMassKg;
+  volumeLabel.textContent = currentVolume_m3.toFixed(3) + ' m³';
+  // animate from currentRadius_m to targetR_m
+  animateRadiusTo(targetR_m);
+  // check landmarks queue based on new radius -> height of sphere top in meters above ground: topHeight_m = centerHeight_m + radius_m
+  // our center's vertical position in meters corresponds to fire top plane (we set ground mapping later). We'll treat 'height' as radius_m*2 roughly (visual) converted to meters
+  // instead, we compute 'height' as sphere radius in meters times 2 (diameter) as indicator for milestone checks
+  queueLandmarksIfNeeded(targetR_m);
+}
+
+/* animation driver */
+function animateRadiusTo(targetR){
+  if(animRAF) cancelAnimationFrame(animRAF);
+  animStart = performance.now();
+  animFromR = currentRadius_m;
+  animToR = targetR;
+  function step(now){
+    const t = Math.min((now - animStart) / CONFIG.ANIM_DURATION_MS, 1);
+    const eased = easeOutCubic(t);
+    const rNow = animFromR + (animToR - animFromR) * eased;
+    setSphereRadiusMeters(rNow);
+    if(t < 1) animRAF = requestAnimationFrame(step);
+    else { currentRadius_m = animToR; animRAF = null; }
+  }
+  animRAF = requestAnimationFrame(step);
+}
+
+function easeOutCubic(t){ return 1 - Math.pow(1 - t, 3); }
+
+/* Set sphere radius in meters -> update SVG ellipse and camera */
+function setSphereRadiusMeters(r_m){
+  currentRadius_m = r_m;
+  const pxPerM = CONFIG.PX_PER_M;
+  const rx_px = r_m * pxPerM * (1 + Math.min((r_m - CONFIG.INITIAL_RADIUS_M) / 150, 0.12)); // slight horizontal stretch
+  const ry_px = r_m * pxPerM;
+  // compute cy so bottom of ellipse aligns with fireRect top
+  const fireY = parseFloat(fireRect.getAttribute('y')); // in svg coords
+  const cy = fireY - ry_px; // cy + ry = fireY
+  sphereEl.setAttribute('rx', rx_px);
+  sphereEl.setAttribute('ry', ry_px);
+  sphereEl.setAttribute('cx', 210);
+  sphereEl.setAttribute('cy', cy);
+  // update labels: height = diameter in meters
+  const height_m = r_m * 2;
+  heightLabel.textContent = formatMeters(height_m);
+  // update gradient darkness based on volume increase
+  updateGradientDarkness();
+  // adjust camera to always fit sphere
+  adjustCameraToContain(210, cy, rx_px, ry_px);
+}
+
+/* camera: translate & scale so sphere fits in "device" box and stays centered */
+function adjustCameraToContain(cx, cy, rx, ry){
+  // device pixel dims
+  const devW = device.clientWidth;
+  const devH = device.clientHeight;
+  // we want sphere bbox width = 2*rx and height = 2*ry with margins
+  const margin = 40; // px
+  const neededW = 2*rx + margin;
+  const neededH = 2*ry + margin + 120; // add room for UI at top
+  const scaleX = devW / neededW;
+  const scaleY = devH / neededH;
+  let s = Math.min(scaleX, scaleY, 1);
+  s = Math.max(0.25, s); // limit zoom out
+  // compute translate so sphere center ends up at device center after scale
+  const tx = (devW/2)/s - cx;
+  const ty = (devH/2)/s - cy;
+  camera.style.transform = `translate(${tx}px, ${ty}px) scale(${s})`;
+  // update backgrounds based on absolute height in meters
+  maybeSwitchBackgrounds();
+}
+
+/* gradient darkness: linear mapping of (currentVolume - initialVolume) to opacity */
+function updateGradientDarkness(){
+  const delta = Math.max(0, currentVolume_m3 - initialVolume_m3);
+  const scale = CONFIG.MAX_DARK_SCALE_M3; // e.g. 1000 m3 for max dark
+  const t = Math.min(delta / scale, 1);
+  // top opacity from ~0.12 to ~0.9, bottom from ~0.03 to ~0.6
+  const topO = (0.12 + 0.78 * t).toFixed(3);
+  const bottomO = (0.03 + 0.57 * t).toFixed(3);
+  gradTop.setAttribute('stop-opacity', topO);
+  gradBottom.setAttribute('stop-opacity', bottomO);
+}
+
+/* format meters nicely */
+function formatMeters(m){
+  if(m >= 1000) return (m/1000).toFixed(2) + ' km';
+  return Math.round(m*100)/100 + ' m';
+}
+
+/* ===================================================================
+   Particles (smoke) generation: spawn from top of fireRect (on the fire)
+   =================================================================== */
+let particleInterval = null;
+function startParticleEmission(){
+  if(particleInterval) return;
+  particleInterval = setInterval(spawnParticle, 110);
+}
+function stopParticleEmission(){
+  if(particleInterval){ clearInterval(particleInterval); particleInterval = null; }
+}
+function spawnParticle(){
+  // spawn small dark squares exactly above the fire (within fireRect width)
+  const p = document.createElement('div');
+  p.className = 'particle';
+  const fireWidth = parseFloat(fireRect.getAttribute('width')) || 240;
+  const size = 6 + Math.random()*18;
+  p.style.width = size + 'px';
+  p.style.height = size + 'px';
+  // compute left relative to particles container center
+  const x = (Math.random() * (fireWidth - size)) - (fireWidth/2) + 10;
+  p.style.left = Math.round(x) + 'px';
+  p.style.bottom = (8 + Math.random()*8) + 'px';
+  p.style.background = 'rgba(0,0,0,1)';
+  p.style.position = 'absolute';
+  p.style.borderRadius = '2px';
+  p.style.opacity = (0.14 + Math.random()*0.6).toFixed(2);
+  p.style.transformOrigin = 'center';
+  particles.appendChild(p);
+  const rise = 40 + Math.random()*110;
+  const rotateTo = (Math.random()*120 - 60);
+  const dur = 900 + Math.random()*1400;
+  p.animate([
+    { transform: 'translateY(0px) rotate(0deg)', opacity: +p.style.opacity },
+    { transform: `translateY(-${rise}px) rotate(${rotateTo}deg)`, opacity: 0 }
+  ], { duration: dur, easing: 'cubic-bezier(.22,.9,.34,1)' });
+  setTimeout(()=> { if(p.parentNode) p.parentNode.removeChild(p); }, dur + 80);
+}
+
+/* ===================================================================
+   Landmarks: queue popups 2s each. If multiple reached while one visible -> queue
+   =================================================================== */
+const reachedLandmarks = new Set();
+function queueLandmarksIfNeeded(targetR_m){
+  // We'll check based on height (top of sphere from ground). For simplicity, treat the "height" triggering as diameter in meters times some factor OR actual top altitude.
+  // The user wants mapping by "height of sphere", we interpret height = sphere diameter in meters times 1 (so when diameter equals 4 m => bus)
+  const diameter_m = targetR_m * 2;
+  LANDMARKS.forEach(land => {
+    if(!reachedLandmarks.has(land.id) && diameter_m >= land.h){
+      reachedLandmarks.add(land.id);
+      popupQueue.push(land);
+    }
+  });
+  // start popup loop if not active
+  if(!popupActive) processPopupQueue();
+}
+
+function processPopupQueue(){
+  if(popupQueue.length === 0){ popupActive = false; return; }
+  popupActive = true;
+  const land = popupQueue.shift();
+  showLandmarkPopup(land);
+  setTimeout(()=>{
+    hideLandmarkPopup();
+    // small delay then process next (ensures sequential)
+    setTimeout(()=> processPopupQueue(), 250);
+  }, CONFIG.POPUP_DURATION_MS);
+}
+
+function showLandmarkPopup(land){
+  // show popup with image placeholder and text; images will be replaced by user later
+  landmarkImg.src = land.img || '';
+  landmarkImg.alt = land.name;
+  landmarkText.textContent = `Куля височить вище за: ${land.name} — ${land.h} м`;
+  landmarkPopup.classList.add('show');
+  landmarkPopup.style.display = 'block';
+}
+
+function hideLandmarkPopup(){
+  landmarkPopup.classList.remove('show');
+  setTimeout(()=> landmarkPopup.style.display = 'none', 200);
+}
+
+/* ===================================================================
+   Background switching (5 km -> bg2 , 30 km -> bg3)
+   =================================================================== */
+function maybeSwitchBackgrounds(){
+  // decide based on current height (we can use diameter or radius*some factor); we'll use diameter in meters
+  const height_m = currentRadius_m * 2;
+  if(height_m >= CONFIG.BG_THRESHOLDS_M.bg3){
+    showBg(3);
+  } else if(height_m >= CONFIG.BG_THRESHOLDS_M.bg2){
+    showBg(2);
+  } else {
+    showBg(1);
+  }
+}
+function showBg(n){
+  bg1.classList.toggle('hidden', n!==1);
+  bg2.classList.toggle('hidden', n!==2);
+  bg3.classList.toggle('hidden', n!==3);
+}
+
+/* ===================================================================
+   Modal rendering (fire composition) - with +/- controls
+   =================================================================== */
+function renderModal(){
+  modalContent.innerHTML = '';
+  const ids = Object.keys(composition);
+  if(ids.length === 0){
+    modalContent.innerHTML = '<div style="opacity:0.85">Вогнище порожнє</div>';
+    return;
+  }
+  ids.forEach(id=>{
+    const s = SUBSTANCES.find(x=>x.id===id);
+    const qty = composition[id];
+    const row = document.createElement('div'); row.className = 'row';
+    row.innerHTML = `
+      <div style="flex:1">
+        <div style="font-weight:700">${s.name}</div>
+        <div style="font-size:12px;opacity:0.8">${s.formula} • CO₂ ${s.co2PerKg} m³/kg</div>
+      </div>
+      <div style="display:flex;gap:6px;align-items:center">
+        <button class="small-btn" data-id="${id}" data-act="dec100">-100</button>
+        <button class="small-btn" data-id="${id}" data-act="dec10">-10</button>
+        <button class="small-btn" data-id="${id}" data-act="dec1">-1</button>
+        <div style="width:56px;text-align:center">${qty} kg</div>
+        <button class="small-btn" data-id="${id}" data-act="inc1">+1</button>
+        <button class="small-btn" data-id="${id}" data-act="inc10">+10</button>
+        <button class="small-btn" data-id="${id}" data-act="inc100">+100</button>
+      </div>
+    `;
+    modalContent.appendChild(row);
+  });
+}
+
+/* modal controls */
+modalContent.addEventListener('click', (ev)=>{
+  const btn = ev.target.closest('button'); if(!btn) return;
+  const id = btn.dataset.id; const act = btn.dataset.act;
+  const map = { dec100:-100, dec10:-10, dec1:-1, inc1:1, inc10:10, inc100:100 };
+  if(act && id) modifyQuantity(id, map[act] || 0);
+});
+
+/* ===================================================================
+   Reset
+   =================================================================== */
+function resetAll(){
+  composition = {}; totalMassKg = 0; totalCO2_m3 = 0; currentVolume_m3 = initialVolume_m3;
+  currentRadius_m = CONFIG.INITIAL_RADIUS_M;
+  cancelAnimation();
+  updateBadges(); renderModal(); massLabel.textContent = 0; volumeLabel.textContent = currentVolume_m3.toFixed(3) + ' m³';
+  setSphereRadiusMeters(currentRadius_m);
+}
+
+/* ===================================================================
+   Utilities: cancel current anim
+   =================================================================== */
+function cancelAnimation(){
+  if(animRAF) cancelAnimationFrame(animRAF);
+  animRAF = null;
+}
+
+/* ===================================================================
+   Popup/particle lifecycle: start/stop particle emission when animating
+   =================================================================== */
+let lastAnimating = false;
+function startAnimatingEffects(){
+  if(!lastAnimating){ startParticleEmission(); lastAnimating = true; }
+}
+function stopAnimatingEffects(){
+  if(lastAnimating){ stopParticleEmission(); lastAnimating = false; }
+}
+
+/* Hook into animation flow: we start particle emission when animateRadiusTo called */
+(function patchAnimateHooks(){
+  // Wrap animateRadiusTo to start/stop particles
+  const orig = animateRadiusTo;
+  animateRadiusTo = function(targetR){
+    startAnimatingEffects();
+    orig(targetR);
+    // stop particles scheduled after duration
+    setTimeout(()=> stopAnimatingEffects(), CONFIG.ANIM_DURATION_MS + 200);
+  };
+})();
+
+/* ===================================================================
+   Helpers: format & initialization
+   =================================================================== */
+function formatNumber(n){ return Math.round(n*100)/100; }
+
+/* Put initial sphere */
+setSphereRadiusMeters(CONFIG.INITIAL_RADIUS_M);
+volumeLabel.textContent = currentVolume_m3.toFixed(3) + ' m³';
+
+/* ===================================================================
+   DEV: expose some functions for console tweaking
+   =================================================================== */
+window.FIRE_SIM = {
+  modifyQuantity, composition, SUBSTANCES, LANDMARKS,
+  setBgImages: function(b1,b2,b3){ bg1.style.backgroundImage = `url('${b1||''}')`; bg2.style.backgroundImage = `url('${b2||''}')`; bg3.style.backgroundImage = `url('${b3||''}')`; },
+  setPxPerM: function(v){ CONFIG.PX_PER_M = v; setSphereRadiusMeters(currentRadius_m); },
+  resetAll
+};
+
+/* ===================================================================
+   End of script
+   =================================================================== */
+</script>
+</body>
+</html>
